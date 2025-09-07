@@ -1,193 +1,219 @@
-<script>
+<script lang="ts">
+  //@ts-nocheck
+  import { onMount } from "svelte";
+  import Map from "ol/Map";
+  import View from "ol/View";
+  import TileLayer from "ol/layer/Tile";
+  import OSM from "ol/source/OSM";
+  import VectorLayer from "ol/layer/Vector";
+  import VectorSource from "ol/source/Vector";
+  import Feature from "ol/Feature";
+  import Polygon from "ol/geom/Polygon";
+  import { Fill, Stroke, Style } from "ol/style";
+  import { tick } from 'svelte';
+  import Overlay from 'ol/Overlay.js';
+  import { fromLonLat } from 'ol/proj.js';
+  import { Popover, Modal } from "flowbite-svelte";
+  import { MapPinAltSolid, FaceGrinStarsSolid, StarSolid } from "flowbite-svelte-icons";
+  import { docs, reps, distCoords, distColors } from "$lib/static.js"
+  import { writable } from "svelte/store";
 
-// @ts-nocheck
+  let ready = writable(false);
+  let showPeopleModal = writable(false);
 
-import { onMount } from 'svelte';
-import { Map, View } from 'ol';
-import TileLayer from 'ol/layer/Tile';
-import OSM from 'ol/source/OSM';
-import { fromLonLat } from 'ol/proj.js';
-import Overlay from 'ol/Overlay.js';
-import { addDocument, getDocuments } from '$lib/model';
-import { writable } from 'svelte/store';
-import { tick } from 'svelte';
-import { Modal, Spinner, Avatar, Popover, Button } from 'flowbite-svelte';
-import MapModal from './MapModal.svelte';
-import { HomeOutline } from "flowbite-svelte-icons"
-import { getCachedImgs } from '$lib/cache';
+  let map: Map;
 
-// export let useCategory = "tech-companies";
-const useCategory = "murals";
+  let showReps = [];
 
-let ready = writable(false);
+  let currDist;
+  let currRep;
 
-let showMapModal = writable(false);
-
-const cambridge = fromLonLat([-71.10366950263109, 42.36596281768288]);
-const home = fromLonLat([-71.09893937618445, 42.366479045735595]);
-
-let map;
-let docs;
-let imgs = {};
-let useImg = "";
-
-let mapData;
-
-onMount(async () => {
-
-  docs = await getDocuments(useCategory);
-
-  imgs = getCachedImgs();
-
-  try {
-    map = new Map({
-      target: 'map',
-      layers: [
-        new TileLayer({
-          source: new OSM()
-        })
-      ],
-      view: new View({
-        center: cambridge,
-        zoom: 15,
+  // Helper: create polygon feature with coords + id
+  function createPolygon(coords: number[][], id: string, color = "red") {
+    const polygon = new Polygon([coords]).transform("EPSG:4326", "EPSG:3857");
+    const feature = new Feature(polygon);
+    feature.setId(id);
+    feature.setStyle(
+      new Style({
+        stroke: new Stroke({ color, width: 3 }),
+        fill: new Fill({ color: "rgba(0, 0, 255, 0.1)" }), // semi-transparent
       })
-    });
-
-    ready.set(true);
-
-    const marker = new Overlay({
-      position: home,
-      positioning: "center-center",
-      element: document.getElementById("marker"),
-      stopEvent: false,
-    })
-    map.addOverlay(marker);
-    // console.log(marker);
-
-    // console.log("ready");
-
-    addAllMarkers();
-
-  } catch (error) {
-    console.log("doesn't works");
+    );
+    return feature;
   }
-  
-})
 
-async function addAllMarkers() {
+  onMount(async () => {
 
-  await tick(); // Very important - used to only start once the {#each} block has stopped rendering.
+    ready.set(false);
 
-  for (let i = 0; i < docs.length; i++) {
-    
-    try {
-      const currId = docs[i].id;
-      console.log(currId);
-      const currPos = docs[i].coords;
-      console.log(currPos);
-      // console.log(document.getElementById("marker"));
-      console.log("marker-" + currId)
-      console.log(document.getElementById('marker-' + currId));
-      const marker = new Overlay({
-        position: fromLonLat(currPos),
-        positioning: 'center-center',
-        element: document.getElementById('marker-' + currId),
-        stopEvent: false,
-      });
-      map.addOverlay(marker);
-
-      const currEl = new Overlay({
-        position: fromLonLat(currPos),
-        element: document.getElementById(currId),
-      });
-      map.addOverlay(currEl);
-      console.log("added");
-    } catch (error) {
-      console.log("Failed to add map element: " + error);
+    for (let i = 0; i < reps.length; i++) {
+      if (reps[i].pos == "current") showReps.push(reps[i].id);
     }
 
-  }
-}
+    console.log(showReps);
 
-const shortAbout = (about) => {
-  if (about.length > 150) return about.substring(0, 149);
-  return about;
-}
+    // console.log(polys);
+
+    let features = [];
+
+    for (let i = 0; i < polys.length; i++) {
+      const curr = polys[i];
+      const temp = createPolygon(curr.coords, curr.name, curr.color);
+      features.push(temp);
+    }
+
+    // console.log(features);
+
+    const vectorLayer = new VectorLayer({
+      source: new VectorSource({
+        features: features,
+      }),
+    });
+
+    map = new Map({
+      target: "map",
+      layers: [new TileLayer({ source: new OSM() }), vectorLayer],
+      view: new View({
+        center: [-13100000, 4030000],
+        zoom: 9,
+      }),
+    });
+
+    // Handle clicks
+    // map.on("singleclick", (evt) => {
+    //   let clicked = false;
+    //   map.forEachFeatureAtPixel(evt.pixel, (feature) => {
+    //     alert("clicked " + feature.getId());
+    //     clicked = true;
+    //   });
+    // });
+
+    await addAllMarkers(docs);
+    await addAllMarkers(reps);
+
+    ready.set(true);
+  });
+
+  async function addAllMarkers(docs) {
+
+    await tick(); // Very important - used to only start once the {#each} block has stopped rendering.
+
+    for (let i = 0; i < docs.length; i++) {
+      
+      try {
+        const currId = docs[i].id;
+        console.log(currId);
+        const currPos = docs[i].coords;
+        console.log(currPos);
+        // console.log(document.getElementById("marker"));
+        console.log("marker-" + currId)
+        console.log(document.getElementById('marker-' + currId));
+        const marker = new Overlay({
+          position: fromLonLat(currPos),
+          positioning: 'center-center',
+          element: document.getElementById('marker-' + currId),
+          stopEvent: false,
+        });
+        map.addOverlay(marker);
+
+        const currEl = new Overlay({
+          position: fromLonLat(currPos),
+          element: document.getElementById(currId),
+        });
+        map.addOverlay(currEl);
+      } catch (error) {
+        console.log("Failed to add map element: " + error);
+      }
+
+    }
+  }
+
+  export let polys = [];
 
 </script>
 
 <style>
-#map {
-  /* margin-top: 2rem; */
-  z-index: -1;
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 100%;
-}
+  #map {
+    width: 100%;
+    height: 100vh;
+    z-index: -1;
+  }
+  
+  .li-content {
+    border: 1px solid black;
+    border-radius: 10px;
+    display: flex;
+    gap: .5rem;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    cursor: pointer;
+    color: black;
+  }
 
-.dot {
-  border: 1px solid black;
-  background-color: white;
-  text-decoration: none;
-  color: rgb(0, 0, 0);
-  font-size: 10pt;
-  /* font-family: 'Gill Sans', 'Gill Sans MT', Calibri, 'Trebuchet MS', sans-serif; */
-  letter-spacing: .5px;
-  padding-left: .5rem;
-  padding-right: .5rem;
-  border-radius: 3px;
-  max-width: 15rem;
-}
-
-.popover {
-  z-index: 10000;
-}
+  .li-content:hover {
+    background-color: gray;
+    color: white;
+  }
 
 </style>
 
-<Modal class="min-w-full" open={$showMapModal} on:close={() => {showMapModal.set(false); }} size="xl">
+<Modal class="min-w-full" title="Choose Representative" open={$showPeopleModal} on:close={() => {showPeopleModal.set(false); }} size="xs">
 
-    <MapModal mapData={mapData}></MapModal>
+    <ul class="list-wrapper">
+
+    {#each reps as r}
+
+      {#if r.district == currDist}
+
+        <li>
+          <div class="li-content">
+          {#if r.id == currRep}
+            <StarSolid color="yellow" class="shrink-0 h-6 w-6" /> 
+            {r.name} <i>({r.pos})</i>
+          {:else}
+            <button id={r.id} on:click={() => {
+              showReps = showReps.filter(id => id !== currRep); // Remove currRep
+              showReps.push(r.id); // Add new rep
+              console.log(showReps);
+            }}>
+              {r.name} <i>({r.pos})</i>
+            </button>
+          {/if}
+          </div>
+          
+        
+        </li>
+
+      {/if}
+
+    {/each}
+
+  </ul>
 
 </Modal>
 
 <div id="map"></div>
 
-{#if $ready}
+{#each docs as d}
 
-  <!-- <div style="display: none;">
+  {#if !showReps.includes(d.rep)}
 
-    <div class="overlay dot" id="home">Home</div>
-    <div id="marker" title="Marker"></div>
+    <!-- <button class="dot" id={d.id}></button> -->
+    <button class="profimgwrapper" style="cursor: pointer;" aria-label={d.id} id="marker-{d.id}" title={d.title}>
+      <MapPinAltSolid color={distColors[d.district - 1]} class="shrink-0 h-6 w-6" />
+    </button>
+    <Popover class="w-64 text-sm font-light popover" title={d.title}>
+      <p style="color: black;">{d.description}</p>
+    </Popover>
 
-  </div> -->
+  {/if}
 
-    {#each docs as d}
+{/each}
 
-      <button class="dot" id={d.id}>{d.title}</button>
-      <button class="profimgwrapper" style="cursor: pointer;" aria-label={d.id} id="marker-{d.id}" title={d.title} on:click={() => {mapData = d; showMapModal.set(true);}}>
-        {#if imgs}
+{#each reps as d}
 
-          <Avatar src={imgs[d.id][0]} />
+  <button class="district-reps" style="cursor: pointer; z-index: 200;" aria-label={d.id} id="marker-{d.id}" title={d.name}  on:click={() => {showPeopleModal.set(true); currDist = d.district; currRep = d.id;}}>
+    <FaceGrinStarsSolid class="shrink-0 h-6 w-6"/> 
+  </button>
 
-        {/if}
-      </button>
-      <Popover class="w-64 text-sm font-light popover" title={d.title}>
-        <p style="color: black;">{d.Location}</p>
-        <hr style="margin-top: .5rem; margin-bottom: .5rem;">
-        {shortAbout(d.About)} ...
-        <button style="color: black; cursor:pointer" on:click={() => {mapData = d; showMapModal.set(true);}}>Read more</button>
-        <img style="cursor: pointer;" on:click={() => {mapData = d; showMapModal.set(true);}} src={imgs[d.id][0]} class="col-span-2 h-full rounded-e-lg" alt="MuralPicture" />
-      </Popover>
-
-      
-    {/each}
-    
-
-
-{:else}
-
-<div class="NOTREADY">Loading .. <Spinner color="red" size={4}/> </div>
-
-{/if}
+{/each}
